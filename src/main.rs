@@ -5,20 +5,14 @@ use structopt::StructOpt;
 use termion::event::Key;
 use termion::raw::IntoRawMode;
 use tui::backend::TermionBackend;
-use tui::widgets::Widget;
 use tui::Terminal;
 
 use crate::events::Event;
-use crate::widgets::{InfrastrukturSelectionWidget, MapWidget};
+use crate::widgets::{InfrastrukturSelectionWidget, TermWidget};
 
 mod api;
 mod events;
 mod widgets;
-
-enum TermWidget {
-    InfrastrukturSelection(InfrastrukturSelectionWidget),
-    Map(MapWidget),
-}
 
 #[derive(StructOpt, Debug)]
 #[structopt(name = "Trassenfinder Infrastructure Explorer")]
@@ -31,14 +25,14 @@ struct Opt {
     api_url: String,
 }
 
-#[tokio::main]
-async fn main() -> Result<()> {
+fn main() -> Result<()> {
+    // Arguments
     let opt: Opt = Opt::from_args();
+    let api_url = &opt.api_url;
 
     // Widgets
-    let mut termwidget = TermWidget::InfrastrukturSelection(
-        InfrastrukturSelectionWidget::from_url(&opt.api_url).await?,
-    );
+    let mut termwidget =
+        TermWidget::InfrastrukturSelection(InfrastrukturSelectionWidget::from_url(api_url)?);
 
     // Terminal
     let stdout = io::stdout().into_raw_mode()?;
@@ -52,15 +46,11 @@ async fn main() -> Result<()> {
 
     loop {
         terminal.draw(|mut f| {
-            let rect = f.size();
-
-            match termwidget {
-                TermWidget::InfrastrukturSelection(ref mut widget) => widget.render(&mut f, rect),
-                TermWidget::Map(ref mut widget) => widget.render(&mut f, rect),
-            }
+            let area = f.size();
+            termwidget.render(&mut f, area);
         })?;
 
-        match input_events.next()? {
+        let next_termwidget = match input_events.next()? {
             Event::Input(key) => match key {
                 Key::Char('q') => {
                     terminal.clear()?;
@@ -68,15 +58,15 @@ async fn main() -> Result<()> {
                 }
                 key @ _ => match termwidget {
                     TermWidget::InfrastrukturSelection(ref mut widget) => {
-                        if let Some(infrastruktur_index) = widget.key_select(key) {
-                            let map_widget =
-                                MapWidget::from_url(&opt.api_url, infrastruktur_index.id).await?;
-                            termwidget = TermWidget::Map(map_widget);
-                        }
+                        widget.select_key(key, api_url)
                     }
-                    TermWidget::Map(ref mut widget) => widget.key_select(key),
+                    TermWidget::Map(ref mut widget) => widget.select_key(key, api_url),
                 },
             },
+        }?;
+
+        if let Some(next_widget) = next_termwidget {
+            termwidget = next_widget;
         }
     }
 

@@ -1,6 +1,7 @@
 use std::collections::HashMap;
 
 use anyhow::{Context, Result};
+use reqwest::blocking;
 use serde::{Deserialize, Serialize};
 use std::convert::TryInto;
 
@@ -40,13 +41,33 @@ pub struct Segment {
 // API
 //
 
+pub fn read_infrastructure_infos(url: &str) -> Result<Vec<InfrastrukturInfo>> {
+    blocking::get(url)
+        .with_context(|| format!("Could not read infrastructure indices from url '{}'", url))?
+        .json()
+        .with_context(|| format!("Could not parse infrastrukturen (json) from url '{}'", url))
+        .map(|mut indices: Vec<InfrastrukturInfo>| {
+            indices.sort_by_key(|k| k.id);
+            indices
+        })
+}
+
 #[derive(Deserialize, Debug)]
-pub struct InfrastrukturIndex {
+pub struct InfrastrukturInfo {
     pub id: u64,
     pub anzeigename: String,
     pub fahrplanjahr: u32,
     pub gueltig_von: String,
     pub gueltig_bis: String,
+}
+
+pub fn read_station_map(base_url: &str, id: u64) -> Result<StationMap> {
+    let url = format!("{}/{}", base_url.trim_end_matches("/"), id);
+    blocking::get(&url)
+        .with_context(|| format!("Could not read infrastructure from url '{}'", &url))?
+        .json()
+        .with_context(|| format!("Could not parse infrastructure (json) from url '{}'", &url))
+        .and_then(|infrastruktur: Infrastruktur| infrastruktur.try_into())
 }
 
 #[derive(Serialize, Deserialize, Debug)]

@@ -1,8 +1,5 @@
-use std::convert::TryInto;
-
-use anyhow::{Context, Result};
+use anyhow::Result;
 use ordered_float::OrderedFloat;
-
 use termion::event::Key;
 use tui::buffer::Buffer;
 use tui::layout::{Constraint, Direction, Layout, Rect};
@@ -10,20 +7,42 @@ use tui::style::{Color, Modifier, Style};
 use tui::widgets::canvas::{Canvas, Line, Points};
 use tui::widgets::{Block, Borders, SelectableList, Widget};
 
-use crate::api::{Infrastruktur, InfrastrukturIndex, Segment, Station, StationMap};
+use crate::api::{
+    read_infrastructure_infos, read_station_map, InfrastrukturInfo, Segment, Station, StationMap,
+};
+use tui::backend::Backend;
+use tui::Frame;
+
+pub enum TermWidget {
+    InfrastrukturSelection(InfrastrukturSelectionWidget),
+    Map(MapWidget),
+}
+
+impl TermWidget {
+    pub fn render<B>(&mut self, f: &mut Frame<B>, area: Rect)
+    where
+        Self: Sized,
+        B: Backend,
+    {
+        match *self {
+            TermWidget::InfrastrukturSelection(ref mut widget) => widget.render(f, area),
+            TermWidget::Map(ref mut widget) => widget.render(f, area),
+        }
+    }
+}
 
 //
 // InfrastrukturSelectionWidget
 //
 
 pub struct InfrastrukturSelectionWidget {
-    values: Vec<InfrastrukturIndex>,
+    values: Vec<InfrastrukturInfo>,
     items: Vec<String>,
     selected: Option<usize>,
 }
 
 impl InfrastrukturSelectionWidget {
-    pub fn new(values: Vec<InfrastrukturIndex>) -> Self {
+    pub fn new(values: Vec<InfrastrukturInfo>) -> Self {
         let items = values
             .iter()
             .map(|index| format!("{}: {}", index.id, index.anzeigename))
@@ -42,18 +61,8 @@ impl InfrastrukturSelectionWidget {
         }
     }
 
-    pub async fn from_url(url: &str) -> Result<Self> {
-        reqwest::get(url)
-            .await
-            .with_context(|| format!("Could not read infrastructure indices from url '{}'", url))?
-            .json()
-            .await
-            .with_context(|| format!("Could not parse infrastrukturen (json) from url '{}'", url))
-            .map(|mut indices: Vec<InfrastrukturIndex>| {
-                indices.sort_by_key(|k| k.id);
-                indices
-            })
-            .map(|values| InfrastrukturSelectionWidget::new(values))
+    pub fn from_url(url: &str) -> Result<Self> {
+        Ok(Self::new(read_infrastructure_infos(url)?))
     }
 
     fn up(&mut self) {
@@ -64,27 +73,26 @@ impl InfrastrukturSelectionWidget {
         self.selected = down(&self.values, self.selected);
     }
 
-    pub fn key_select(&mut self, key: Key) -> Option<&InfrastrukturIndex> {
-        match key {
-            Key::Up => {
-                self.up();
-                None
-            }
-            Key::Down => {
-                self.down();
-                None
-            }
-            Key::Char('\n') /* enter */ => self.selected_value(),
-            _ => None,
-        }
-    }
-
-    fn selected_value(&self) -> Option<&InfrastrukturIndex> {
+    fn selected_value(&self) -> Option<&InfrastrukturInfo> {
         if let Some(index) = self.selected {
             Some(&self.values[index])
         } else {
             None
         }
+    }
+
+    pub fn select_key(&mut self, key: Key, api_url: &str) -> Result<Option<TermWidget>> {
+        match key {
+            Key::Up => self.up(),
+            Key::Down => self.down(),
+            Key::Char('\n') /* enter */ => {
+                if let Some(info) = self.selected_value() {
+                    return Ok(Some(TermWidget::Map(MapWidget::from_url(api_url, info.id)?)));
+                }
+            }
+            _ => {}
+        }
+        Ok(None)
     }
 }
 
@@ -181,28 +189,24 @@ impl MapWidget {
         }
     }
 
-    pub async fn from_url(base_url: &str, id: u64) -> Result<Self> {
-        let url = format!("{}/{}", base_url.trim_end_matches("/"), id);
-        reqwest::get(&url)
-            .await
-            .with_context(|| format!("Could not read infrastructure from url '{}'", &url))?
-            .json()
-            .await
-            .with_context(|| format!("Could not parse infrastructure (json) from url '{}'", &url))
-            .and_then(|infrastruktur: Infrastruktur| infrastruktur.try_into())
-            .map(|station_map| MapWidget::new(station_map))
+    pub fn from_url(bae_url: &str, id: u64) -> Result<Self> {
+        Ok(Self::new(read_station_map(bae_url, id)?))
     }
 
-    pub fn key_select(&mut self, key: Key) {
+    pub fn select_key(&mut self, key: Key, api_url: &str) -> Result<Option<TermWidget>> {
         match key {
             Key::Char('b') => self.widget_selection = WidgetSelection::Stations,
             Key::Char('s') => self.widget_selection = WidgetSelection::Segments,
+            Key::Esc => {
+                let widget = InfrastrukturSelectionWidget::from_url(api_url)?;
+                return Ok(Some(TermWidget::InfrastrukturSelection(widget)));
+            }
             _ => {}
         }
 
         match self.widget_selection {
-            WidgetSelection::Stations => self.stations_widget.key_select(key),
-            WidgetSelection::Segments => self.segments_widget.key_select(key),
+            WidgetSelection::Stations => self.stations_widget.select_key(key),
+            WidgetSelection::Segments => self.segments_widget.select_key(key),
         }
     }
 }
@@ -334,12 +338,13 @@ impl ListSelectionWidget {
         self.selected = down(&self.names, self.selected);
     }
 
-    pub fn key_select(&mut self, key: Key) {
+    pub fn select_key(&mut self, key: Key) -> Result<Option<TermWidget>> {
         match key {
             Key::Up => self.up(),
             Key::Down => self.down(),
             _ => {}
         }
+        Ok(None)
     }
 }
 
